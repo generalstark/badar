@@ -1,0 +1,199 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Major Payne's Badar</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bitter:wght@600;700&family=Work+Sans:wght@400;500;600&display=swap">
+<style>
+  /* Layout: full-height map with a floating field-card panel */
+  :root {
+    --bg: #f3f5f1;
+    --panel: #ffffff;
+    --fg: #1d2a22;
+    --muted: #5d6b62;
+    --accent: #c2531b;   /* blaze orange */
+    --pine: #2f5d45;
+    --line: #d6ddd6;
+    --display: "Bitter", Georgia, serif;
+    --body: "Work Sans", system-ui, sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #121915; --panel: #1b241f; --fg: #e6ece7; --muted: #9aa89f;
+      --accent: #e8763c; --pine: #7fb497; --line: #2d3a33; color-scheme: dark;
+    }
+  }
+  [hidden] { display: none !important; }
+  html, body { height: 100%; margin: 0; }
+  body { background: var(--bg); color: var(--fg); font: 15px/1.5 var(--body); }
+  #map { position: absolute; inset: 0; }
+  .panel {
+    position: absolute; z-index: 1000; top: 16px; left: 16px;
+    width: min(340px, calc(100% - 32px)); box-sizing: border-box;
+    background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+    padding: 18px; display: flex; flex-direction: column; gap: 12px;
+    box-shadow: 0 6px 24px rgba(0,0,0,.18);
+  }
+  h1 { font: 700 22px/1.2 var(--display); margin: 0; text-wrap: balance; }
+  .sub { color: var(--muted); font-size: 13px; margin: 0; }
+  button {
+    font: 600 16px var(--body); color: #fff; background: var(--accent);
+    border: 0; border-radius: 8px; padding: 12px 16px; cursor: pointer;
+  }
+  button:hover { filter: brightness(1.08); }
+  button:focus-visible, a:focus-visible, input:focus-visible { outline: 3px solid var(--pine); outline-offset: 2px; }
+  .result { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; font-size: 14px; }
+  .result dt { color: var(--muted); text-transform: uppercase; letter-spacing: .06em; font-size: 11px; padding-top: 3px; }
+  .result dd { margin: 0; font-variant-numeric: tabular-nums; }
+  .links { display: flex; gap: 12px; flex-wrap: wrap; font-size: 14px; }
+  .links a { color: var(--pine); font-weight: 600; }
+  details { font-size: 13px; color: var(--muted); }
+  details label { display: flex; flex-direction: column; gap: 2px; margin-top: 8px; }
+  details input { font: 14px var(--body); padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--fg); }
+  .bird { display: flex; flex-direction: column; gap: 4px; font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
+  .bird select { font: 500 15px var(--body); text-transform: none; letter-spacing: 0; padding: 8px 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--fg); }
+  .tip { font-size: 12px; color: var(--muted); margin: 0; }
+  @media (max-width: 520px) {
+    .panel { top: auto; bottom: 16px; padding: 14px; gap: 10px; }
+    h1 { font-size: 19px; }
+  }
+</style>
+</head>
+<body>
+<div id="map"></div>
+
+<section class="panel" aria-label="Bird radar">
+  <div>
+    <h1>Major Payne's Badar <span class="sub" style="font:500 14px var(--body)">(Bird Radar)</span></h1>
+    <p class="sub">Scanning <span id="radiusLabel">10</span> miles around North Branch Camps, Eustis, Maine.</p>
+  </div>
+  <label class="bird" for="bird">Bird
+    <select id="bird">
+      <option value="grouse">Grouse</option>
+      <option value="woodcock">Woodcock</option>
+    </select>
+  </label>
+  <button id="pick" type="button">Scan for grouse</button>
+  <dl class="result" id="result">
+    <dt>Coords</dt><dd id="coords">–</dd>
+    <dt>Distance</dt><dd id="dist">–</dd>
+    <dt>Heading</dt><dd id="heading">–</dd>
+  </dl>
+  <div class="links" id="links" hidden>
+    <a id="gmaps" target="_blank" rel="noopener">Open in Google Maps</a>
+    <a id="gdir" target="_blank" rel="noopener">Directions from camp</a>
+  </div>
+  <details>
+    <summary>Settings</summary>
+    <label for="radius">Radius (miles)
+      <input id="radius" type="number" min="0.5" max="100" step="0.5" value="10">
+    </label>
+    <p class="tip">Shift-click the map to move the camp marker to the exact spot.</p>
+  </details>
+</section>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+  const MILE_M = 1609.344;
+  // Approximate location of North Branch Camps, 1112 Arnold Trail (Rt 27), Eustis ME
+  let center = loadCenter() || [45.20095, -70.46361];
+  let radiusMi = 10;
+
+  const map = L.map('map', { zoomControl: true }).setView(center, 11);
+  // OSM's own tile servers refuse pages opened from a file (no Referer), so use providers that don't.
+  const esri = 'https://server.arcgisonline.com/ArcGIS/rest/services/';
+  const baseLayers = {
+    'Topo': L.tileLayer(esri + 'World_Topo_Map/MapServer/tile/{z}/{y}/{x}', {
+      maxZoom: 19, attribution: 'Tiles &copy; Esri'
+    }),
+    'Satellite': L.tileLayer(esri + 'World_Imagery/MapServer/tile/{z}/{y}/{x}', {
+      maxZoom: 19, attribution: 'Imagery &copy; Esri, Maxar, Earthstar Geographics'
+    }),
+    'Streets': L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', {
+      maxZoom: 19, subdomains: 'abcd', attribution: '&copy; OpenStreetMap contributors &copy; CARTO'
+    })
+  };
+  baseLayers['Topo'].addTo(map);
+  L.control.layers(baseLayers, null, { position: 'topright' }).addTo(map);
+
+  const campIcon = L.divIcon({
+    className: '',
+    html: '<div style="width:16px;height:16px;border-radius:50%;background:#2f5d45;border:3px solid #fff;box-shadow:0 0 0 1px #2f5d45"></div>',
+    iconSize: [22, 22], iconAnchor: [11, 11]
+  });
+  const camp = L.marker(center, { icon: campIcon, title: 'North Branch Camps' })
+    .addTo(map).bindTooltip('North Branch Camps', { direction: 'top', offset: [0, -10] });
+  const circle = L.circle(center, {
+    radius: radiusMi * MILE_M, color: '#2f5d45', weight: 2, fillOpacity: 0.06, dashArray: '6 6'
+  }).addTo(map);
+  let pin = null, line = null;
+
+  // Spread hits evenly across the scan area.
+  function randomPoint() {
+    const R = 6371008.8;
+    const d = radiusMi * MILE_M * Math.sqrt(Math.random());
+    const brng = Math.random() * 2 * Math.PI;
+    const lat1 = center[0] * Math.PI / 180, lon1 = center[1] * Math.PI / 180;
+    const ad = d / R;
+    const lat2 = Math.asin(Math.sin(lat1) * Math.cos(ad) + Math.cos(lat1) * Math.sin(ad) * Math.cos(brng));
+    const lon2 = lon1 + Math.atan2(Math.sin(brng) * Math.sin(ad) * Math.cos(lat1),
+                                   Math.cos(ad) - Math.sin(lat1) * Math.sin(lat2));
+    return { lat: lat2 * 180 / Math.PI, lng: lon2 * 180 / Math.PI, d, brng: brng * 180 / Math.PI };
+  }
+
+  function compass(deg) {
+    const dirs = ['N','NNE','NE','ENE','E','ESE','SE','SSE','S','SSW','SW','WSW','W','WNW','NW','NNW'];
+    return dirs[Math.round(deg / 22.5) % 16];
+  }
+
+  const birdSelect = document.getElementById('bird');
+  function birdName() { return birdSelect.options[birdSelect.selectedIndex].text; }
+  birdSelect.addEventListener('change', () => {
+    document.getElementById('pick').textContent = 'Scan for ' + birdName().toLowerCase();
+  });
+
+  function pick() {
+    const p = randomPoint();
+    const ll = [p.lat, p.lng];
+    if (pin) pin.remove();
+    if (line) line.remove();
+    pin = L.marker(ll).addTo(map);
+    line = L.polyline([center, ll], { color: '#c2531b', weight: 2, dashArray: '4 6' }).addTo(map);
+    const coordStr = p.lat.toFixed(5) + ', ' + p.lng.toFixed(5);
+    pin.bindPopup('<b>' + birdName() + ' detected</b><br>' + coordStr).openPopup();
+    map.fitBounds(L.latLngBounds([center, ll]).pad(0.5), { maxZoom: 13 });
+
+    document.getElementById('coords').textContent = coordStr;
+    document.getElementById('dist').textContent = (p.d / MILE_M).toFixed(2) + ' mi straight-line';
+    document.getElementById('heading').textContent = compass(p.brng) + ' (' + Math.round(p.brng) + '°)';
+    document.getElementById('gmaps').href = 'https://www.google.com/maps/search/?api=1&query=' + p.lat + ',' + p.lng;
+    document.getElementById('gdir').href = 'https://www.google.com/maps/dir/?api=1&origin=' + center.join(',') + '&destination=' + p.lat + ',' + p.lng;
+    document.getElementById('links').hidden = false;
+  }
+
+  function setCenter(ll) {
+    center = ll;
+    camp.setLatLng(ll);
+    circle.setLatLng(ll);
+    try { localStorage.setItem('nbw-center-v2', JSON.stringify(ll)); } catch (e) {}
+  }
+  function loadCenter() {
+    try { const v = JSON.parse(localStorage.getItem('nbw-center-v2')); return Array.isArray(v) ? v : null; } catch (e) { return null; }
+  }
+
+  map.on('click', e => { if (e.originalEvent.shiftKey) setCenter([e.latlng.lat, e.latlng.lng]); });
+  document.getElementById('pick').addEventListener('click', pick);
+  document.getElementById('radius').addEventListener('change', e => {
+    const v = parseFloat(e.target.value);
+    if (!(v > 0)) return;
+    radiusMi = v;
+    circle.setRadius(v * MILE_M);
+    document.getElementById('radiusLabel').textContent = v;
+    map.fitBounds(circle.getBounds());
+  });
+  map.fitBounds(circle.getBounds());
+</script>
+</body>
+</html>
