@@ -95,6 +95,7 @@
 </section>
 
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@turf/turf@6.5.0/turf.min.js"></script>
 <script>
   const MILE_M = 1609.344;
   // Approximate location of North Branch Camps, 1112 Arnold Trail (Rt 27), Eustis ME
@@ -125,9 +126,9 @@
   });
   const camp = L.marker(center, { icon: campIcon, title: 'North Branch Camps' })
     .addTo(map).bindTooltip('North Branch Camps', { direction: 'top', offset: [0, -10] });
-  const circle = L.circle(center, {
-    radius: radiusMi * MILE_M, color: '#2f5d45', weight: 2, fillOpacity: 0.06, dashArray: '6 6'
-  }).addTo(map);
+  // Invisible full circle, used only for zooming to the scan area.
+  const circle = L.circle(center, { radius: radiusMi * MILE_M, opacity: 0, fillOpacity: 0, interactive: false }).addTo(map);
+  let area = null;
   let pin = null, line = null;
 
   // Alder Stream Township boundary (OpenStreetMap relation 12238948). Scans never land inside it.
@@ -143,6 +144,19 @@
     }
     return hit;
   }
+
+  // Draw the scan area as the circle with the township cut out, so its edge follows the township line.
+  function drawArea() {
+    const disk = turf.circle([center[1], center[0]], radiusMi, { units: 'miles', steps: 256 });
+    const township = turf.polygon([NO_GO.map(([lat, lng]) => [lng, lat])]);
+    const shape = turf.difference(disk, township) || disk;
+    if (area) area.remove();
+    area = L.geoJSON(shape, {
+      style: { color: '#2f5d45', weight: 2, fillOpacity: 0.06, dashArray: '6 6' },
+      interactive: false
+    }).addTo(map);
+  }
+  drawArea();
 
   // Spread hits evenly across the scan area.
   function randomPoint() {
@@ -192,6 +206,7 @@
     center = ll;
     camp.setLatLng(ll);
     circle.setLatLng(ll);
+    drawArea();
     try { localStorage.setItem('nbw-center-v2', JSON.stringify(ll)); } catch (e) {}
   }
   function loadCenter() {
@@ -205,6 +220,7 @@
     if (!(v > 0)) return;
     radiusMi = v;
     circle.setRadius(v * MILE_M);
+    drawArea();
     document.getElementById('radiusLabel').textContent = v;
     map.fitBounds(circle.getBounds());
   });
